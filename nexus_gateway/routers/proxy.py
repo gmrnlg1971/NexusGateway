@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 import httpx
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Any, AsyncGenerator
 
 from nexus_gateway.core.balancer import balancer
 from nexus_gateway.core.rate_limit import limiter
@@ -20,9 +20,13 @@ class ChatCompletionRequest(BaseModel):
     stream: Optional[bool] = False
     temperature: Optional[float] = 0.7
 
-async def verify_rate_limit(request: Request):
+async def verify_rate_limit(request: Request) -> str:
+    """
+    Dependency function to verify if the incoming request exceeds the rate limit.
+    """
     # In a real app, extract user_id from auth token. Here we use IP for demo.
-    user_id = request.client.host
+    client_host = request.client.host if request.client else "unknown"
+    user_id = str(client_host)
     if await limiter.is_rate_limited(user_id, limit=settings.rate_limit_rpm):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
     return user_id
@@ -31,9 +35,16 @@ async def verify_rate_limit(request: Request):
 async def chat_completions(
     request: Request, 
     user_id: str = Depends(verify_rate_limit)
-):
+) -> Any:
     """
     Proxies request to the optimal vLLM node based on semantic KV cache routing.
+    
+    Args:
+        request: The FastAPI incoming request.
+        user_id: Validated user identifier from rate limiting.
+        
+    Returns:
+        JSON response or StreamingResponse.
     """
     payload = await request.json()
     chat_req = ChatCompletionRequest(**payload)
@@ -53,7 +64,7 @@ async def chat_completions(
     client = request.app.state.http_client
     
     if chat_req.stream:
-        async def stream_generator():
+        async def stream_generator() -> AsyncGenerator[str, None]:
             async with client.stream("POST", url, json=payload) as response:
                 if response.status_code != 200:
                     yield f"data: {{\"error\": \"Upstream error {response.status_code}\"}}\n\n"

@@ -1,5 +1,5 @@
-import xxhash
-from typing import List
+import xxhash # type: ignore
+from typing import List, Dict
 from bisect import bisect
 from nexus_gateway.core.config import settings
 
@@ -11,16 +11,26 @@ class KVCacheAwareBalancer:
     A consistent hash ring ensures minimal disruption to existing caches when
     scaling cluster size up or down.
     """
-    def __init__(self, nodes: List[str], vnodes: int = 100):
-        self.nodes = nodes
-        self.vnodes = vnodes
-        self.ring = {}
-        self.sorted_keys = []
+    def __init__(self, nodes: List[str], vnodes: int = 100) -> None:
+        """
+        Initializes the consistent hashing ring for routing requests.
+        
+        Args:
+            nodes: List of backend vLLM node URLs.
+            vnodes: Number of virtual nodes per physical node.
+        """
+        self.nodes: List[str] = nodes
+        self.vnodes: int = vnodes
+        self.ring: Dict[int, str] = {}
+        self.sorted_keys: List[int] = []
         
         if nodes:
             self._build_ring()
 
-    def _build_ring(self):
+    def _build_ring(self) -> None:
+        """
+        Builds the consistent hash ring by placing virtual nodes.
+        """
         for node in self.nodes:
             for i in range(self.vnodes):
                 vnode_key = f"{node}:{i}"
