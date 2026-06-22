@@ -6,7 +6,11 @@ from nexus_gateway.core.config import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.http_client = httpx.AsyncClient(limits=httpx.Limits(max_keepalive_connections=100, max_connections=200))
+    # DEVIL MODE: Added explicit timeout to prevent global socket exhaustion during upstream LLM hangs
+    app.state.http_client = httpx.AsyncClient(
+        limits=httpx.Limits(max_keepalive_connections=100, max_connections=200),
+        timeout=httpx.Timeout(60.0, connect=5.0)
+    )
     yield
     await app.state.http_client.aclose()
 
