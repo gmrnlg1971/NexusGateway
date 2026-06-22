@@ -29,25 +29,32 @@ async def verify_rate_limit(request: Request):
 
 @router.post("/v1/chat/completions")
 async def chat_completions(
-    request: ChatCompletionRequest, 
+    request: Request, 
     user_id: str = Depends(verify_rate_limit)
 ):
     """
     Proxies request to the optimal vLLM node based on semantic KV cache routing.
     """
-    # 1. Extract context for routing
-    full_prompt = "\n".join([m.content for m in request.messages])
+    payload = await request.json()
+    chat_req = ChatCompletionRequest(**payload)
+
+    # 1. Extract context for routing (isolate system prompt)
+    system_messages = [m.content for m in chat_req.messages if m.role == "system"]
+    if system_messages:
+        full_prompt = "\n".join(system_messages)
+    else:
+        full_prompt = "\n".join([m.content for m in chat_req.messages])
     
     # 2. Get optimal KV-cache aware node
     target_node = balancer.get_node(full_prompt)
     url = f"{target_node}/v1/chat/completions"
 
-    # 3. Proxy request asynchronously
-    client = httpx.AsyncClient()
+    # 3. Proxy request asynchronously using global client
+    client = request.app.state.http_client
     
-    if request.stream:
+    if chat_req.stream:
         async def stream_generator():
-            async with client.stream("POST", url, json=request.model_dump()) as response:
+            async with client.stream("POST", url, json=payload) as response:
                 if response.status_code != 200:
                     yield f"data: {{\"error\": \"Upstream error {response.status_code}\"}}\n\n"
                     return
@@ -55,7 +62,7 @@ async def chat_completions(
                     yield chunk
         return StreamingResponse(stream_generator(), media_type="text/event-stream")
     else:
-        response = await client.post(url, json=request.model_dump())
+        response = await client.post(url, json=payload)
         if response.status_code != 200:
             raise HTTPException(status_code=response.status_code, detail="Upstream vLLM error")
         return response.json()

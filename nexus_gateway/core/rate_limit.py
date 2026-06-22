@@ -1,4 +1,5 @@
 import time
+import uuid
 import redis.asyncio as redis
 from nexus_gateway.core.config import settings
 
@@ -18,7 +19,7 @@ class AsyncRateLimiter:
             # Remove elements outside the current window
             pipe.zremrangebyscore(key, 0, current_time - window)
             # Add current request
-            pipe.zadd(key, {str(current_time): current_time})
+            pipe.zadd(key, {f"{current_time}:{uuid.uuid4()}": current_time})
             # Count elements in window
             pipe.zcard(key)
             # Set expiry to prevent stale keys
