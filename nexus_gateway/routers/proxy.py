@@ -1,0 +1,61 @@
+from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.responses import StreamingResponse
+import httpx
+from pydantic import BaseModel
+from typing import List, Optional
+
+from nexus_gateway.core.balancer import balancer
+from nexus_gateway.core.rate_limit import limiter
+from nexus_gateway.core.config import settings
+
+router = APIRouter()
+
+class Message(BaseModel):
+    role: str
+    content: str
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[Message]
+    stream: Optional[bool] = False
+    temperature: Optional[float] = 0.7
+
+async def verify_rate_limit(request: Request):
+    # In a real app, extract user_id from auth token. Here we use IP for demo.
+    user_id = request.client.host
+    if await limiter.is_rate_limited(user_id, limit=settings.rate_limit_rpm):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    return user_id
+
+@router.post("/v1/chat/completions")
+async def chat_completions(
+    request: ChatCompletionRequest, 
+    user_id: str = Depends(verify_rate_limit)
+):
+    """
+    Proxies request to the optimal vLLM node based on semantic KV cache routing.
+    """
+    # 1. Extract context for routing
+    full_prompt = "\n".join([m.content for m in request.messages])
+    
+    # 2. Get optimal KV-cache aware node
+    target_node = balancer.get_node(full_prompt)
+    url = f"{target_node}/v1/chat/completions"
+
+    # 3. Proxy request asynchronously
+    client = httpx.AsyncClient()
+    
+    if request.stream:
+        async def stream_generator():
+            async with client.stream("POST", url, json=request.model_dump()) as response:
+                if response.status_code != 200:
+                    yield f"data: {{\"error\": \"Upstream error {response.status_code}\"}}\n\n"
+                    return
+                async for chunk in response.aiter_text():
+                    yield chunk
+        return StreamingResponse(stream_generator(), media_type="text/event-stream")
+    else:
+        response = await client.post(url, json=request.model_dump())
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail="Upstream vLLM error")
+        return response.json()
